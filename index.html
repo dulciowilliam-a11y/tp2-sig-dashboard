@@ -19,21 +19,38 @@
 <div class="card"><h2>Catégorie dominante</h2><div class="value small" id="dominante">…</div></div>
 </section>
 <div class="layout">
-<section class="panel"><h2>Carte interactive des châteaux</h2><div id="map" role="region" aria-label="Carte des châteaux d'Île-de-France"></div><div class="legend" id="legend"></div><p class="muted">Cliquez sur un point pour afficher le nom, la commune et la catégorie.</p></section>
+<section class="panel"><h2>Carte interactive des châteaux</h2><div id="map" role="region" aria-label="Carte des châteaux, communes et départements d'Île-de-France"></div><div class="legend" id="legend"></div><p class="muted">Cliquez sur un château pour afficher son nom, sa commune et sa catégorie. Utilisez le sélecteur en haut à droite pour afficher ou masquer les couches administratives.</p></section>
 <section class="panel"><h2>Répartition par catégorie</h2><div id="chart" aria-label="Graphique en barres des catégories">Chargement…</div><div class="analysis"><h2>Interprétation des résultats</h2><p id="interpretation">Chargement des données…</p></div></section>
 </div>
 <p id="error" class="error" role="alert"></p>
-</main><footer>Source : couche Chateaux_demeures_IDF_2020 exportée depuis ArcGIS Pro — Fond OpenStreetMap</footer>
+</main><footer>Sources : Chateaux_demeures_IDF_2020, communes_simplifiees_2019 et departements_IDF exportées depuis ArcGIS Pro — Fond OpenStreetMap</footer>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const map=L.map('map').setView([48.85,2.35],9);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors',maxZoom:19}).addTo(map);
+const osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors',maxZoom:19}).addTo(map);
+// Des panneaux séparés garantissent que les châteaux restent au-dessus des contours.
+map.createPane('departementsPane');map.getPane('departementsPane').style.zIndex=410;
+map.createPane('communesPane');map.getPane('communesPane').style.zIndex=420;
+map.createPane('chateauxPane');map.getPane('chateauxPane').style.zIndex=430;
+const departementsLayer=L.geoJSON(null,{pane:'departementsPane',style:{color:'#17365d',weight:2.8,opacity:.9,fill:false,interactive:false}}).addTo(map);
+const communesLayer=L.geoJSON(null,{pane:'communesPane',style:{color:'#73899b',weight:.65,opacity:.7,fill:false,interactive:false}}).addTo(map);
+const chateauxLayer=L.geoJSON(null,{pane:'chateauxPane',pointToLayer:(f,ll)=>L.circleMarker(ll,{pane:'chateauxPane',radius:7,color:'#273b53',weight:1,fillColor:colorOf(categoryNumber(f.properties?.Categorie)),fillOpacity:.88}),onEachFeature:(f,l)=>{const p=f.properties||{};l.bindPopup('<strong>'+safe(p.NOM)+'</strong><br>Commune : '+safe(p.NOMCOM)+'<br>Catégorie : '+safe(p.Categorie));}}).addTo(map);
+L.control.layers(null,{'Châteaux et demeures':chateauxLayer,'Limites des communes':communesLayer,'Limites des départements':departementsLayer},{collapsed:false,position:'topright'}).addTo(map);
 const palette=['#e85b50','#2694cb','#87ae35','#9053a5'];
 const labels=['1 - Intérêt local','2 - Intérêt supra-local','3 - Intérêt régional','4 - Intérêt national ou international'];
 function categoryNumber(raw){const match=String(raw??'').match(/^\s*([1-4])\s*-/);return match?Number(match[1]):0;}
 function colorOf(n){return palette[n-1]||'#6b7280';}
 function safe(value){return String(value??'Non renseigné').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-fetch('data/chateaux_IDF.geojson').then(r=>{if(!r.ok)throw Error('GeoJSON introuvable (HTTP '+r.status+')');return r.json()}).then(data=>{
+async function loadGeoJSON(path,layer){const response=await fetch(path);if(!response.ok)throw Error(path+' (HTTP '+response.status+')');const data=await response.json();layer.addData(data);return data;}
+// Les contours administratifs se chargent indépendamment des statistiques des châteaux.
+Promise.allSettled([
+  loadGeoJSON('data/departements_IDF.geojson',departementsLayer),
+  loadGeoJSON('data/communes_IDF.geojson',communesLayer)
+]).then(results=>{
+  const failed=results.map((r,i)=>r.status==='rejected'?[i===0?'départements':'communes',r.reason.message]:null).filter(Boolean);
+  if(failed.length){document.getElementById('error').textContent='Attention : couche(s) non chargée(s) : '+failed.map(x=>x[0]+' ('+x[1]+')').join('; ')+'.';}
+});
+loadGeoJSON('data/chateaux_IDF.geojson',chateauxLayer).then(data=>{
 const features=Array.isArray(data.features)?data.features:[];
 const counts=[0,0,0,0],communes=new Set();let other=0;
 for(const f of features){const p=f.properties||{};const n=categoryNumber(p.Categorie);if(n)counts[n-1]++;else other++;if(p.NOMCOM&&String(p.NOMCOM).trim())communes.add(String(p.NOMCOM).trim().toUpperCase());}
@@ -46,9 +63,8 @@ const chart=document.getElementById('chart');chart.textContent='';
 counts.forEach((count,i)=>{const row=document.createElement('div');row.className='chart-row';const label=document.createElement('div');label.className='chart-label';label.textContent=labels[i];const track=document.createElement('div');track.className='chart-track';const bar=document.createElement('div');bar.className='chart-bar';bar.style.width=(max?count/max*100:0)+'%';bar.style.background=palette[i];track.append(bar);const number=document.createElement('div');number.className='chart-count';number.textContent=count+' château(x)';row.append(label,track,number);chart.append(row);});
 if(other){const p=document.createElement('p');p.className='muted';p.textContent=other+' entité(s) sans catégorie reconnue.';chart.append(p);}
 const legend=document.getElementById('legend');labels.forEach((label,i)=>{const item=document.createElement('span');const dot=document.createElement('span');dot.className='dot';dot.style.background=palette[i];item.append(dot,document.createTextNode(label));legend.append(item);});if(other){const item=document.createElement('span');item.innerHTML='<span class="dot" style="background:#6b7280"></span>Autres / non renseignés';legend.append(item);}
-const layer=L.geoJSON(data,{pointToLayer:(f,ll)=>L.circleMarker(ll,{radius:7,color:'#273b53',weight:1,fillColor:colorOf(categoryNumber(f.properties?.Categorie)),fillOpacity:.88}),onEachFeature:(f,l)=>{const p=f.properties||{};l.bindPopup('<strong>'+safe(p.NOM)+'</strong><br>Commune : '+safe(p.NOMCOM)+'<br>Catégorie : '+safe(p.Categorie));}}).addTo(map);
-if(layer.getLayers().length)map.fitBounds(layer.getBounds(),{padding:[25,25]});
+if(chateauxLayer.getLayers().length)map.fitBounds(chateauxLayer.getBounds(),{padding:[25,25]});
 const interpretation=document.getElementById('interpretation');interpretation.textContent=features.length+' châteaux et demeures sont recensés dans les données, répartis dans '+communes.size+' communes. '+(max?'La catégorie la plus représentée est « '+labels[dominant].replace(/^\d - /,'')+' » avec '+max+' sites ('+(100*max/features.length).toFixed(1).replace('.',',')+' %). ':'')+'La carte permet d’observer leur répartition spatiale et de consulter les informations de chaque site.';
-}).catch(err=>{document.getElementById('total').textContent='Erreur';document.getElementById('chart').textContent='Données indisponibles';document.getElementById('interpretation').textContent='Impossible de calculer les statistiques.';document.getElementById('error').textContent='Chargement impossible : '+err.message+'. Vérifiez que le serveur fonctionne et que data/chateaux_IDF.geojson existe.';console.error(err);});
+}).catch(err=>{document.getElementById('total').textContent='Erreur';document.getElementById('chart').textContent='Données indisponibles';document.getElementById('interpretation').textContent='Impossible de calculer les statistiques.';document.getElementById('error').textContent='Chargement impossible : '+err.message+'. Vérifiez que data/chateaux_IDF.geojson existe.';console.error(err);});
 </script>
 </body></html>
